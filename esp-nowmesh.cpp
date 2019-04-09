@@ -22,32 +22,33 @@
   }
   
   uint8_t NowMeshPacket::toRAW(uint8_t data[]){
-    memset(data, 0, this->SIZE+17);
+    memset(data, 0, this->SIZE+16);
     stringToMac(this->DESTINATION, data);
     stringToMac(this->SOURCE, data+6);
     data[12] = TTL;
     data[13] = UID>>8;
     data[14] = UID & 8 ;
-    data[15] = (ACK&1)<<7 | (SOS&1)<<6 | (MANAGEMENT&1)<<7 ;
+    data[15] = (ACK&1)<<7 | (SOS&1)<<6 | (MNG&1)<<5;
     memcpy(data+16, this->DATA, this->SIZE);
-    return this->SIZE+17;
+    return this->SIZE+16;
   }
   
   uint8_t NowMeshPacket::sizeRAW(){
-    return this->SIZE+17;
+    return this->SIZE+16;
   }
   
   uint8_t NowMeshPacket::fromRAW(const uint8_t data[], uint8_t size){
-    this->DESTINATION = macToString(data);
-    this->SOURCE = macToString(data+6);
+    DESTINATION = macToString(data);
+    SOURCE = macToString(data+6);
     TTL = data[12];
     UID = (uint16_t)data[13]<<8 | data[14];
     ACK = (data[15]>>7) & 1;
     SOS = (data[15]>>6) & 1;
-    MANAGEMENT = (data[15]>>5) & 1;
-    this->SIZE = size-17;
-    this->DATA = (uint8_t*)malloc(this->SIZE);
-    memcpy(this->DATA, data+16, this->SIZE);
+    MNG = (data[15]>>5) & 1;
+    SIZE = size-16;
+    DATA = (uint8_t*)malloc(SIZE);
+    memcpy(DATA, data+16, SIZE);
+    
     return this->SIZE;
   }
   
@@ -58,16 +59,12 @@
 
 // END NOWMESH PACKET
 
+NOWMESH_class::ReceivedDataFunction NOWMESH_class::on_received = 0;
+NOWMESH_class::SentDataFunction NOWMESH_class::on_sent = 0;
+uint8_t NOWMESH_class::channel = 0;
 
-
-
-
-
-NOWMESH_class::NOWMESH_class(){
-  this->on_receive=0;
-  this->on_send=0;
-  this->channel=0;
-}
+LinkedList<NowMeshPacket> NOWMESH_class::history;
+LinkedList<String> NOWMESH_class::subscribed;
 
 void NOWMESH_class::begin(uint8_t channel) {
   WiFi.mode(WIFI_STA);
@@ -80,18 +77,18 @@ void NOWMESH_class::begin(uint8_t channel) {
   esp_now_peer_info_t brcst;
   memset(&brcst, 0, sizeof(brcst));
   memcpy(brcst.peer_addr, broadcastAddr, ESP_NOW_ETH_ALEN);
-  brcst.channel = this->channel;
+  brcst.channel = channel;
   brcst.ifidx = ESP_IF_WIFI_STA;
   esp_now_add_peer(&brcst);
   
 }
 
-void NOWMESH_class::setOnReceive(void (*function)(String source, String destination, uint8_t size, uint8_t data[])) {
-  this->on_receive = function;
+void NOWMESH_class::setOnReceive(ReceivedDataFunction function) {
+  on_received = function;
 }
 
-void NOWMESH_class::setOnSend(void (*function)(String source, String destination, uint8_t status)) {
-  this->on_send = function;
+void NOWMESH_class::setOnSend(SentDataFunction function) {
+  on_sent = function;
 }
 
 void NOWMESH_class::send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK, uint8_t SOS){
@@ -99,6 +96,7 @@ void NOWMESH_class::send(String source, String destination, uint8_t data[], uint
   new_packet.SIZE = size;
   new_packet.ACK = ACK;
   new_packet.SOS = SOS;
+  new_packet.MNG = 0;
   new_packet.SOURCE = source;
   new_packet.DESTINATION = destination;
   new_packet.UID=esp_random(); //TODO NTP ?
@@ -110,10 +108,13 @@ void NOWMESH_class::send(String source, String destination, uint8_t data[], uint
   new_packet.toRAW(packetData);
   
   esp_now_send(broadcastAddr, packetData, new_packet.sizeRAW());
-  new_packet.DATA=0; //DATA not needed
-  this->history.add(new_packet);
+  new_packet.DATA = 0; //DATA not needed
+  new_packet.TIMESTAMP = millis();
+  history.add(new_packet);
   
 }
+
+
 
 void NOWMESH_class::subscribe(String address){
   uint16_t i;
@@ -128,6 +129,22 @@ String NOWMESH_class::ID() {
     return WiFi.macAddress();
 }
 
+void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
+  if (packet.TTL==0) return;
+  Serial.print("REPEATING:"); Serial.println(packet.UID); 
+  Serial.print("SRC:  "); Serial.println(packet.SOURCE);
+  Serial.print("DST:  "); Serial.println(packet.DESTINATION);
+  Serial.print("DATA: "); Serial.println((char*)packet.DATA);
+  packet.TTL--;
+    
+  uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  uint8_t packetData[packet.sizeRAW()];
+  packet.toRAW(packetData);
+  
+  esp_now_send(broadcastAddr, packetData, packet.sizeRAW());
+  
+  packet.TTL++;
+}
 void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_t len){
   NowMeshPacket new_packet;
   new_packet.fromRAW(data, len);
@@ -137,18 +154,34 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   history.add(new_packet); //Without DATA
   new_packet.DATA=newData;
 
+
   uint16_t i;
+  for (i=0; i<history.size(); i++){
+    while (i<history.size() && millis() - history.get(i).TIMESTAMP > 20000) {
+      history.remove(i);
+    }
+    if (i<history.size() &&
+        history.get(i).UID == new_packet.UID &&
+        history.get(i).SOURCE == new_packet.SOURCE &&
+        history.get(i).DESTINATION == new_packet.DESTINATION &&
+        history.get(i).ACK == new_packet.ACK &&
+        history.get(i).SOS == new_packet.SOS &&
+        history.get(i).MNG == new_packet.MNG)
+          return;
+  }
+
+  packet_repeat(new_packet);
+
   for (i=0; i<subscribed.size(); i++)
     if (subscribed.get(i).equals(new_packet.DESTINATION)) break;
   
-  if (subscribed.size() != i) {
+  if (subscribed.size() != i)
+    if (on_received) on_received(new_packet);
+
 //TODO:    if (new_packet.ACK) send_ACK(new_packet);
-    if (this->on_receive) on_receive(new_packet.SOURCE, new_packet.DESTINATION, new_packet.SIZE, new_packet.DATA);
-  } else {
-//TODO:    this->forward(new_packet);
-  }
-    
+  
 }
+
 void NOWMESH_class::send_data(const uint8_t *mac, uint8_t status){
   
 }
@@ -162,8 +195,13 @@ String macToString(const uint8_t* mac) {
 }
 
 void stringToMac(const String mac, uint8_t result[]){
+  String temp = mac;
+  temp.replace(":","");
+  temp.replace("-","");
+  temp.trim();
+  temp.toUpperCase();
   for (int i=0; i<6; i++) {
-      result[i] = ((mac[i*2] > '9') ? (mac[i*2]-'A'+0xA):(mac[i*2]-'0')) << 4 | ((mac[i*2+1] > '9') ? (mac[i*2+1]-'A'+0xA):(mac[i*2+1]-'0'));
+      result[i] = ((temp[i*2] > '9') ? (temp[i*2]-'A'+0xA):(temp[i*2]-'0')) << 4 | ((temp[i*2+1] > '9') ? (temp[i*2+1]-'A'+0xA):(temp[i*2+1]-'0'));
   }
 }
 

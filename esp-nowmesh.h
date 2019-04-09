@@ -18,9 +18,11 @@ class NowMeshPacket {
   uint16_t UID;
   uint8_t ACK;
   uint8_t SOS;
-  uint8_t MANAGEMENT;
+  uint8_t MNG;
   String SOURCE;
   String DESTINATION;
+
+  uint32_t TIMESTAMP;
   
   String DATAasString();
   
@@ -32,26 +34,28 @@ class NowMeshPacket {
 class NOWMESH_class {
 
 public:
-  NOWMESH_class();
-  void begin(uint8_t channel=6);
-  void setOnReceive(void (*function)(String source, String destination, uint8_t size, uint8_t data[]));
-  void setOnSend(void (*function)(String source, String destination, uint8_t status));
-  void send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK=0, uint8_t SOS=0);
-  void subscribe(String address);
-  String ID();
+  typedef void (*ReceivedDataFunction)(NowMeshPacket &packet);
+  typedef void (*SentDataFunction)(String source, String destination, uint8_t status);
+
+  static void begin(uint8_t channel=6);
+  static void setOnReceive(ReceivedDataFunction function);
+  static void setOnSend(SentDataFunction function);
+  static void send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK=0, uint8_t SOS=0);
+  static void subscribe(String address);
+  static String ID();
   
 private:
-  void (*on_receive)(String source, String destination, uint8_t size, uint8_t data[]);
-  void (*on_send)(String source, String destination, uint8_t status);
+  static ReceivedDataFunction on_received;
+  static SentDataFunction on_sent;
 
-  void receive_data(const uint8_t *mac, const uint8_t *data, uint8_t len);
-  void send_data(const uint8_t *mac, uint8_t status);
+  static void receive_data(const uint8_t *mac, const uint8_t *data, uint8_t len);
+  static void send_data(const uint8_t *mac, uint8_t status);
+  static void packet_repeat(NowMeshPacket &packet);
   
-  uint8_t channel;
-  
+  static uint8_t channel;
 
-  LinkedList<NowMeshPacket> history;
-  LinkedList<String> subscribed;
+  static LinkedList<NowMeshPacket> history;
+  static LinkedList<String> subscribed;
   
   
 };
