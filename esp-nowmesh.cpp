@@ -77,6 +77,7 @@ void NOWMESH_class::begin(uint8_t channel) {
   esp_now_peer_info_t brcst;
   memset(&brcst, 0, sizeof(brcst));
   memcpy(brcst.peer_addr, broadcastAddr, ESP_NOW_ETH_ALEN);
+  NOWMESH_class::channel = channel;
   brcst.channel = channel;
   brcst.ifidx = ESP_IF_WIFI_STA;
   esp_now_add_peer(&brcst);
@@ -100,7 +101,7 @@ void NOWMESH_class::send(String source, String destination, uint8_t data[], uint
   new_packet.SOURCE = source;
   new_packet.DESTINATION = destination;
   new_packet.UID=esp_random(); //TODO NTP ?
-  new_packet.TTL= (new_packet.SOS ? 255:16); //Should I really define this?
+  new_packet.TTL= (new_packet.SOS ? 255:15); //Should I really define this?
   new_packet.DATA = data;
   
   uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -109,7 +110,7 @@ void NOWMESH_class::send(String source, String destination, uint8_t data[], uint
   
   esp_now_send(broadcastAddr, packetData, new_packet.sizeRAW());
   new_packet.DATA = 0; //DATA not needed
-  new_packet.TIMESTAMP = millis();
+  new_packet.TIMESTAMP = esp_timer_get_time();
   history.add(new_packet);
   
 }
@@ -131,10 +132,11 @@ String NOWMESH_class::ID() {
 
 void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
   if (packet.TTL==0) return;
-  Serial.print("REPEATING:"); Serial.println(packet.UID); 
-  Serial.print("SRC:  "); Serial.println(packet.SOURCE);
-  Serial.print("DST:  "); Serial.println(packet.DESTINATION);
-  Serial.print("DATA: "); Serial.println((char*)packet.DATA);
+  Serial.print("REPEATING:"); Serial.println(packet.UID);
+//  Serial.print("SRC:  "); Serial.println(packet.SOURCE);
+//  Serial.print("DST:  "); Serial.println(packet.DESTINATION);
+//  Serial.print("TTL:"); Serial.println(packet.TTL); 
+//  Serial.print("DATA: "); Serial.println((char*)packet.DATA);
   packet.TTL--;
     
   uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -149,35 +151,52 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   NowMeshPacket new_packet;
   new_packet.fromRAW(data, len);
   
-  uint8_t* newData = new_packet.DATA;
-  new_packet.DATA=0;
-  history.add(new_packet); //Without DATA
-  new_packet.DATA=newData;
 
+  Serial.println("NEW PACKET!!!");
+  Serial.print("TTL: "); Serial.println(new_packet.TTL);
+  Serial.print("UID: "); Serial.println(new_packet.UID);
+  Serial.print("TIME: "); Serial.println(new_packet.TIMESTAMP);
+  Serial.println("END OF ENTRY");
 
+Serial.print("HISTORY SIZE: ");
+Serial.println(history.size());
   uint16_t i;
   for (i=0; i<history.size(); i++){
-    while (i<history.size() && millis() - history.get(i).TIMESTAMP > 20000) {
+//  Serial.print("HISTORY POSITION: "); Serial.println(i);
+//  Serial.print("TTL: "); Serial.println(history.get(i).TTL);
+//  Serial.print("UID: "); Serial.println(history.get(i).UID);
+//  Serial.print("TIME: "); Serial.println(history.get(i).TIMESTAMP);
+//  Serial.println("END OF ENTRY");
+  
+    while (i<history.size() && esp_timer_get_time() - history.get(i).TIMESTAMP > 20000) {
+      Serial.print("REMOVING: "); Serial.println(history.get(i).UID);
       history.remove(i);
     }
-    if (i<history.size() &&
-        history.get(i).UID == new_packet.UID &&
-        history.get(i).SOURCE == new_packet.SOURCE &&
-        history.get(i).DESTINATION == new_packet.DESTINATION &&
-        history.get(i).ACK == new_packet.ACK &&
-        history.get(i).SOS == new_packet.SOS &&
-        history.get(i).MNG == new_packet.MNG)
-          return;
+    if ( i<history.size() && 
+      history.get(i).UID == new_packet.UID &&
+      history.get(i).SOURCE == new_packet.SOURCE &&
+      history.get(i).DESTINATION == new_packet.DESTINATION &&
+      history.get(i).ACK == new_packet.ACK &&
+      history.get(i).SOS == new_packet.SOS &&
+      history.get(i).MNG == new_packet.MNG){
+        Serial.print("DUPLICATE: "); Serial.println(history.get(i).UID);
+          return; //duplicate packet, ignore silently
+      }
+      
   }
-
+  
+  uint8_t* newData = new_packet.DATA;
+  new_packet.DATA=0;
+  new_packet.TIMESTAMP = esp_timer_get_time();
+  history.add(new_packet); //Without DATA
+  new_packet.DATA=newData;
   packet_repeat(new_packet);
 
   for (i=0; i<subscribed.size(); i++)
-    if (subscribed.get(i).equals(new_packet.DESTINATION)) break;
-  
-  if (subscribed.size() != i)
-    if (on_received) on_received(new_packet);
-
+    if (subscribed.get(i).equals(new_packet.DESTINATION)){
+      if (on_received) on_received(new_packet);
+      break;
+    }
 //TODO:    if (new_packet.ACK) send_ACK(new_packet);
   
 }

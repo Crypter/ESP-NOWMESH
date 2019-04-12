@@ -22,7 +22,7 @@ class NowMeshPacket {
   String SOURCE;
   String DESTINATION;
 
-  uint32_t TIMESTAMP;
+  int64_t TIMESTAMP;
   
   String DATAasString();
   
