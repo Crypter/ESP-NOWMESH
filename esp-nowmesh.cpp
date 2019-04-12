@@ -13,21 +13,14 @@
 
   NowMeshPacket::NowMeshPacket(){
   }
-
-  String NowMeshPacket::DATAasString(){
-    uint8_t temp[this->SIZE+1];
-    memcpy(temp, DATA, SIZE);
-    temp[SIZE]='\0';
-    return String((char *)temp);
-  }
   
   uint8_t NowMeshPacket::toRAW(uint8_t data[]){
     memset(data, 0, this->SIZE+16);
     stringToMac(this->DESTINATION, data);
     stringToMac(this->SOURCE, data+6);
     data[12] = TTL;
-    data[13] = UID>>8;
-    data[14] = UID & 8 ;
+    data[13] = UID >> 8;
+    data[14] = UID & 0xFF ;
     data[15] = (ACK&1)<<7 | (SOS&1)<<6 | (MNG&1)<<5;
     memcpy(data+16, this->DATA, this->SIZE);
     return this->SIZE+16;
@@ -41,19 +34,18 @@
     DESTINATION = macToString(data);
     SOURCE = macToString(data+6);
     TTL = data[12];
-    UID = (uint16_t)data[13]<<8 | data[14];
+    UID = (uint16_t) data[13]<<8 | data[14];
     ACK = (data[15]>>7) & 1;
     SOS = (data[15]>>6) & 1;
     MNG = (data[15]>>5) & 1;
     SIZE = size-16;
     DATA = (uint8_t*)malloc(SIZE);
     memcpy(DATA, data+16, SIZE);
-    
     return this->SIZE;
   }
   
   NowMeshPacket::~NowMeshPacket(){
-    if (this->DATA) free(this->DATA);
+//    if (this->DATA) free(this->DATA);
   }
 
 
@@ -100,19 +92,20 @@ void NOWMESH_class::send(String source, String destination, uint8_t data[], uint
   new_packet.MNG = 0;
   new_packet.SOURCE = source;
   new_packet.DESTINATION = destination;
-  new_packet.UID=esp_random(); //TODO NTP ?
-  new_packet.TTL= (new_packet.SOS ? 255:15); //Should I really define this?
+  new_packet.UID = esp_random();
+  new_packet.TTL = (new_packet.SOS ? 255:15); //Should I really define this?
+  new_packet.TIMESTAMP = millis();
+
+  new_packet.DATA = 0;
+  history.add(new_packet);
   new_packet.DATA = data;
-  
+
+
   uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t packetData[new_packet.sizeRAW()];
   new_packet.toRAW(packetData);
-  
+
   esp_now_send(broadcastAddr, packetData, new_packet.sizeRAW());
-  new_packet.DATA = 0; //DATA not needed
-  new_packet.TIMESTAMP = esp_timer_get_time();
-  history.add(new_packet);
-  
 }
 
 
@@ -132,10 +125,10 @@ String NOWMESH_class::ID() {
 
 void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
   if (packet.TTL==0) return;
-  Serial.print("REPEATING:"); Serial.println(packet.UID);
+  Serial.printf("RPT: %04X\n", packet.UID);
 //  Serial.print("SRC:  "); Serial.println(packet.SOURCE);
 //  Serial.print("DST:  "); Serial.println(packet.DESTINATION);
-//  Serial.print("TTL:"); Serial.println(packet.TTL); 
+//  Serial.print("TTL:"); Serial.println(packet.TTL);
 //  Serial.print("DATA: "); Serial.println((char*)packet.DATA);
   packet.TTL--;
     
@@ -151,25 +144,15 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   NowMeshPacket new_packet;
   new_packet.fromRAW(data, len);
   
+  Serial.println();
+  Serial.printf("NEW: %04X\n", new_packet.UID);
 
-  Serial.println("NEW PACKET!!!");
-  Serial.print("TTL: "); Serial.println(new_packet.TTL);
-  Serial.print("UID: "); Serial.println(new_packet.UID);
-  Serial.print("TIME: "); Serial.println(new_packet.TIMESTAMP);
-  Serial.println("END OF ENTRY");
-
-Serial.print("HISTORY SIZE: ");
-Serial.println(history.size());
   uint16_t i;
   for (i=0; i<history.size(); i++){
-//  Serial.print("HISTORY POSITION: "); Serial.println(i);
-//  Serial.print("TTL: "); Serial.println(history.get(i).TTL);
-//  Serial.print("UID: "); Serial.println(history.get(i).UID);
-//  Serial.print("TIME: "); Serial.println(history.get(i).TIMESTAMP);
-//  Serial.println("END OF ENTRY");
+  Serial.printf("CMP: %04X | %04X\n", new_packet.UID, history.get(i).UID);
   
-    while (i<history.size() && esp_timer_get_time() - history.get(i).TIMESTAMP > 20000) {
-      Serial.print("REMOVING: "); Serial.println(history.get(i).UID);
+    while (i<history.size() && millis() - history.get(i).TIMESTAMP > 20000) {
+  Serial.printf("REM: %04X\n", history.get(i).UID);
       history.remove(i);
     }
     if ( i<history.size() && 
@@ -179,7 +162,7 @@ Serial.println(history.size());
       history.get(i).ACK == new_packet.ACK &&
       history.get(i).SOS == new_packet.SOS &&
       history.get(i).MNG == new_packet.MNG){
-        Serial.print("DUPLICATE: "); Serial.println(history.get(i).UID);
+          Serial.printf("DUP: %04X\n", history.get(i).UID);
           return; //duplicate packet, ignore silently
       }
       
@@ -187,7 +170,7 @@ Serial.println(history.size());
   
   uint8_t* newData = new_packet.DATA;
   new_packet.DATA=0;
-  new_packet.TIMESTAMP = esp_timer_get_time();
+  new_packet.TIMESTAMP = millis();
   history.add(new_packet); //Without DATA
   new_packet.DATA=newData;
   packet_repeat(new_packet);

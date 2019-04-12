@@ -30,9 +30,7 @@ void loop() {
   if(digitalRead(0)!=button_state){
     if (digitalRead(0)==0){
       Serial.println("SENDING-START");
-      NowMesh.send(NowMesh.ID(), "FF:FF:FF:FF:FA:FE", (uint8_t*)"utnata", 7);
-      delay(500);
-      NowMesh.send(NowMesh.ID(), "FF:FF:FF:FF:FF:FF", (uint8_t*)"tocna", 6);
+      NowMesh.send(NowMesh.ID(), "FF:FF:FF:FF:FF:FFh", (uint8_t*)"tocna", 6);
       Serial.println("SENDING-DONE");
     }
     button_state=digitalRead(0);
