@@ -20,8 +20,8 @@
     stringToMac(this->SOURCE, data+6);
     data[12] = TTL;
     data[13] = UID >> 8;
-    data[14] = UID & 0xFF ;
-    data[15] = (ACK&1)<<7 | (SOS&1)<<6 | (MNG&1)<<5;
+    data[14] = UID & 0xFF;
+    data[15] = (ACK&1)<<7 | (ANS&1)<<6 | (MNG&1)<<5;
     memcpy(data+16, this->DATA, this->SIZE);
     return this->SIZE+16;
   }
@@ -36,7 +36,7 @@
     TTL = data[12];
     UID = (uint16_t) data[13]<<8 | data[14];
     ACK = (data[15]>>7) & 1;
-    SOS = (data[15]>>6) & 1;
+    ANS = (data[15]>>6) & 1;
     MNG = (data[15]>>5) & 1;
     SIZE = size-16;
     DATA = (uint8_t*)malloc(SIZE);
@@ -53,6 +53,7 @@
 
 NOWMESH_class::ReceivedDataFunction NOWMESH_class::on_received = 0;
 NOWMESH_class::SentDataFunction NOWMESH_class::on_sent = 0;
+NOWMESH_class::ACKDataFunction NOWMESH_class::on_ack = 0;
 uint8_t NOWMESH_class::channel = 0;
 
 LinkedList<NowMeshPacket> NOWMESH_class::history;
@@ -84,16 +85,20 @@ void NOWMESH_class::setOnSend(SentDataFunction function) {
   on_sent = function;
 }
 
-void NOWMESH_class::send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK, uint8_t SOS){
+void NOWMESH_class::setOnACK(ACKDataFunction function) {
+  on_ack = function;
+}
+
+uint16_t NOWMESH_class::send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK){
   NowMeshPacket new_packet;
   new_packet.SIZE = size;
   new_packet.ACK = ACK;
-  new_packet.SOS = SOS;
+  new_packet.ANS = 0;
   new_packet.MNG = 0;
   new_packet.SOURCE = source;
   new_packet.DESTINATION = destination;
   new_packet.UID = esp_random();
-  new_packet.TTL = (new_packet.SOS ? 255:15); //Should I really define this?
+  new_packet.TTL = 15; //Should I really define this?
   new_packet.TIMESTAMP = millis();
 
   new_packet.DATA = 0;
@@ -106,6 +111,7 @@ void NOWMESH_class::send(String source, String destination, uint8_t data[], uint
   new_packet.toRAW(packetData);
 
   esp_now_send(broadcastAddr, packetData, new_packet.sizeRAW());
+  return new_packet.UID;
 }
 
 
@@ -124,12 +130,8 @@ String NOWMESH_class::ID() {
 }
 
 void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
-  if (packet.TTL==0) return;
+  if (packet.TTL==0 || packet.DESTINATION == NOWMESH_class::ID()) return;
   Serial.printf("RPT: %04X\n", packet.UID);
-//  Serial.print("SRC:  "); Serial.println(packet.SOURCE);
-//  Serial.print("DST:  "); Serial.println(packet.DESTINATION);
-//  Serial.print("TTL:"); Serial.println(packet.TTL);
-//  Serial.print("DATA: "); Serial.println((char*)packet.DATA);
   packet.TTL--;
     
   uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -140,6 +142,44 @@ void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
   
   packet.TTL++;
 }
+
+
+void NOWMESH_class::packet_ack(NowMeshPacket &packet){
+  if (packet.ACK==0 || packet.ANS==1) return;
+
+  if (packet.ACK==1 && packet.ANS==0){
+    Serial.printf("ACK: %04X\n", packet.UID);
+    
+    NowMeshPacket response;
+    response.SIZE = 2;
+    response.ACK = 1;
+    response.ANS = 1;
+    response.MNG = 0;
+    response.SOURCE = NOWMESH_class::ID();
+    response.DESTINATION = packet.SOURCE;
+    response.UID = esp_random();
+    response.TTL = 15; //Should I really define this?
+    response.TIMESTAMP = millis();
+
+    response.DATA = 0;
+    history.add(response);
+    
+    response.DATA = (uint8_t*)malloc(2);
+    response.DATA[0] = packet.UID >> 8;
+    response.DATA[1] = packet.UID & 0xFF;
+    
+    uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t packetData[response.sizeRAW()];
+    response.toRAW(packetData);
+    
+    esp_now_send(broadcastAddr, packetData, response.sizeRAW());
+  }
+  
+}
+void NOWMESH_class::packet_mng(NowMeshPacket &packet){
+   //TODO
+}
+
 void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_t len){
   NowMeshPacket new_packet;
   new_packet.fromRAW(data, len);
@@ -149,18 +189,19 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
 
   uint16_t i;
   for (i=0; i<history.size(); i++){
-  Serial.printf("CMP: %04X | %04X\n", new_packet.UID, history.get(i).UID);
-  
+      
     while (i<history.size() && millis() - history.get(i).TIMESTAMP > 20000) {
   Serial.printf("REM: %04X\n", history.get(i).UID);
       history.remove(i);
     }
+      Serial.printf("CMP: %04X | %04X\n", new_packet.UID, history.get(i).UID);
+
     if ( i<history.size() && 
       history.get(i).UID == new_packet.UID &&
       history.get(i).SOURCE == new_packet.SOURCE &&
       history.get(i).DESTINATION == new_packet.DESTINATION &&
       history.get(i).ACK == new_packet.ACK &&
-      history.get(i).SOS == new_packet.SOS &&
+      history.get(i).ANS == new_packet.ANS &&
       history.get(i).MNG == new_packet.MNG){
           Serial.printf("DUP: %04X\n", history.get(i).UID);
           return; //duplicate packet, ignore silently
@@ -173,15 +214,27 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   new_packet.TIMESTAMP = millis();
   history.add(new_packet); //Without DATA
   new_packet.DATA=newData;
-  packet_repeat(new_packet);
 
-  for (i=0; i<subscribed.size(); i++)
-    if (subscribed.get(i).equals(new_packet.DESTINATION)){
-      if (on_received) on_received(new_packet);
-      break;
+  packet_repeat(new_packet);
+  packet_ack(new_packet);
+
+  if (new_packet.MNG) {
+    packet_mng(new_packet);
+  } else if (new_packet.ANS==1 && new_packet.SIZE==2){
+      if (on_ack){
+        uint16_t new_UID = (uint16_t) new_packet.DATA[0]<<8 | new_packet.DATA[1];
+        for (i=0; i<history.size(); i++){
+          if (history.get(i).UID == new_UID) on_ack(new_packet.SOURCE, new_UID);
+        }
     }
-//TODO:    if (new_packet.ACK) send_ACK(new_packet);
-  
+  } else {
+    for (i=0; i<subscribed.size(); i++)
+      if (subscribed.get(i).equals(new_packet.DESTINATION)){
+//        if (on_received) on_received(new_packet);
+        break;
+      }
+  }
+  on_received(new_packet); //DEBUG MODE
 }
 
 void NOWMESH_class::send_data(const uint8_t *mac, uint8_t status){
