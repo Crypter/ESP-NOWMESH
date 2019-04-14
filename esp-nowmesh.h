@@ -40,7 +40,8 @@ public:
   static void setOnReceive(ReceivedDataFunction function);
   static void setOnSend(SentDataFunction function);
   static void setOnACK(ACKDataFunction function);
-  static uint16_t send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK=0);
+  static void packet_send(NowMeshPacket &packet);
+  static uint16_t send(String service, uint8_t data[], uint8_t size, uint8_t ACK = 0);
   static void subscribe(String address);
   static String ID();
   
@@ -54,6 +55,7 @@ private:
   static void packet_repeat(NowMeshPacket &packet);
   static void packet_ack(NowMeshPacket &packet);
   static void packet_mng(NowMeshPacket &packet);
+  static void timesync( void * parameter );
   
   static uint8_t channel;
 

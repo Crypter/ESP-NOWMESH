@@ -60,8 +60,8 @@ LinkedList<NowMeshPacket> NOWMESH_class::history;
 LinkedList<String> NOWMESH_class::subscribed;
 
 void NOWMESH_class::begin(uint8_t channel) {
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  WiFi.enableSTA(true);
+//  WiFi.mode(WIFI_STA);
   esp_now_init();
   esp_now_register_send_cb(reinterpret_cast<esp_now_send_cb_t>(&NOWMESH_class::send_data));
   esp_now_register_recv_cb(reinterpret_cast<esp_now_recv_cb_t>(&NOWMESH_class::receive_data));
@@ -75,6 +75,50 @@ void NOWMESH_class::begin(uint8_t channel) {
   brcst.ifidx = ESP_IF_WIFI_STA;
   esp_now_add_peer(&brcst);
   
+	xTaskCreatePinnedToCore(
+		reinterpret_cast<TaskFunction_t>(&NOWMESH_class::timesync),   /* Function to implement the task */
+		"timesync", /* Name of the task */
+		5000,      /* Stack size in words */
+		0,       /* Task input parameter */
+		1,          /* Priority of the task */
+		NULL,       /* Task handle. */
+		APP_CPU_NUM);  /* Core where the task should run */
+  
+}
+
+void NOWMESH_class::timesync( void * parameter ) {
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+	for (;;){
+      uint64_t millisepoch;
+      struct timeval tv;
+      gettimeofday(&tv, NULL);
+      while(tv.tv_sec<1500000000){
+        delay(5000);
+        gettimeofday(&tv, NULL);
+      }
+      millisepoch = ((uint64_t)tv.tv_sec * 1000 + (tv.tv_usec / 1000));
+//      Serial.println(tv.tv_sec);
+//      Serial.printf("%08X%08X\n", (uint32_t)((uint64_t)millisepoch>>32), (uint32_t)(millisepoch)&0xFFFFFFFF);
+    NowMeshPacket new_packet;
+    new_packet.SIZE = 9;
+    new_packet.ACK = 0;
+    new_packet.ANS = 0;
+    new_packet.MNG = 1;
+    new_packet.SOURCE = NOWMESH_class::ID();
+    new_packet.DESTINATION = "FF:FF:FF:FF:FF:FF";
+    new_packet.UID = esp_random();
+    new_packet.TTL = 15;
+
+    uint8_t data[9];
+    data[0]='s'; //sync
+    for (int i=0; i<8; i++){
+      data[i+1] = millisepoch>>(i*8);
+    }
+    new_packet.DATA = data;
+  
+    NOWMESH_class::packet_send(new_packet);
+    delay(60000);
+	}
 }
 
 void NOWMESH_class::setOnReceive(ReceivedDataFunction function) {
@@ -89,31 +133,38 @@ void NOWMESH_class::setOnACK(ACKDataFunction function) {
   on_ack = function;
 }
 
-uint16_t NOWMESH_class::send(String source, String destination, uint8_t data[], uint8_t size, uint8_t ACK){
+uint16_t NOWMESH_class::send(String service, uint8_t data[], uint8_t size, uint8_t ACK){
   NowMeshPacket new_packet;
   new_packet.SIZE = size;
   new_packet.ACK = ACK;
   new_packet.ANS = 0;
   new_packet.MNG = 0;
-  new_packet.SOURCE = source;
-  new_packet.DESTINATION = destination;
+  new_packet.SOURCE = NOWMESH_class::ID();
+  new_packet.DESTINATION = service;
   new_packet.UID = esp_random();
-  new_packet.TTL = 15; //Should I really define this?
-  new_packet.TIMESTAMP = millis();
-
-  new_packet.DATA = 0;
-  history.add(new_packet);
+  new_packet.TTL = 15;
   new_packet.DATA = data;
 
-
-  uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  uint8_t packetData[new_packet.sizeRAW()];
-  new_packet.toRAW(packetData);
-
-  esp_now_send(broadcastAddr, packetData, new_packet.sizeRAW());
+  NOWMESH_class::packet_send(new_packet);
   return new_packet.UID;
 }
 
+void NOWMESH_class::packet_send(NowMeshPacket &packet){
+
+	packet.TIMESTAMP = millis();
+
+	uint8_t *data_temp;
+	data_temp = packet.DATA;
+	packet.DATA = 0;
+	history.add(packet);
+	packet.DATA = data_temp;
+
+	uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+	uint8_t packetData[packet.sizeRAW()];
+	packet.toRAW(packetData);
+
+	esp_now_send(broadcastAddr, packetData, packet.sizeRAW());
+}
 
 
 void NOWMESH_class::subscribe(String address){
@@ -126,7 +177,10 @@ void NOWMESH_class::subscribe(String address){
 }
 
 String NOWMESH_class::ID() {
-    return WiFi.macAddress();
+    char mac[18];
+    uint64_t fuseMac = ESP.getEfuseMac();
+    sprintf(mac, "%02X:%02X:%02X:%02X:%02X:%02X", (uint8_t)(fuseMac>>0)&0xFF, (uint8_t)(fuseMac>>8)&0xFF, (uint8_t)(fuseMac>>16)&0xFF, (uint8_t)(fuseMac>>24)&0xFF, (uint8_t)(fuseMac>>32)&0xFF, (uint8_t)(fuseMac>>40)&0xFF );
+    return mac;
 }
 
 void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
@@ -134,11 +188,7 @@ void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
   Serial.printf("RPT: %04X\n", packet.UID);
   packet.TTL--;
     
-  uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-  uint8_t packetData[packet.sizeRAW()];
-  packet.toRAW(packetData);
-  
-  esp_now_send(broadcastAddr, packetData, packet.sizeRAW());
+  NOWMESH_class::packet_send(packet);
   
   packet.TTL++;
 }
@@ -160,19 +210,14 @@ void NOWMESH_class::packet_ack(NowMeshPacket &packet){
     response.UID = esp_random();
     response.TTL = 15; //Should I really define this?
     response.TIMESTAMP = millis();
+    
+	uint8_t data[2];
+	data[0] = packet.UID >> 8;
+	data[1] = packet.UID & 0xFF;
+    response.DATA = data;
+    
+      NOWMESH_class::packet_send(response);
 
-    response.DATA = 0;
-    history.add(response);
-    
-    response.DATA = (uint8_t*)malloc(2);
-    response.DATA[0] = packet.UID >> 8;
-    response.DATA[1] = packet.UID & 0xFF;
-    
-    uint8_t broadcastAddr[6]={0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    uint8_t packetData[response.sizeRAW()];
-    response.toRAW(packetData);
-    
-    esp_now_send(broadcastAddr, packetData, response.sizeRAW());
   }
   
 }
@@ -216,7 +261,6 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   new_packet.DATA=newData;
 
   packet_repeat(new_packet);
-  packet_ack(new_packet);
 
   if (new_packet.MNG) {
     packet_mng(new_packet);
@@ -230,6 +274,7 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   } else {
     for (i=0; i<subscribed.size(); i++)
       if (subscribed.get(i).equals(new_packet.DESTINATION)){
+		packet_ack(new_packet);
 //        if (on_received) on_received(new_packet);
         break;
       }
