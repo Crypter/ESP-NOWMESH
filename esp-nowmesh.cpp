@@ -61,6 +61,7 @@ LinkedList<String> NOWMESH_class::subscribed;
 
 void NOWMESH_class::begin(uint8_t channel) {
   WiFi.enableSTA(true);
+  WiFi.setSleep(false);
 //  WiFi.mode(WIFI_STA);
   esp_now_init();
   esp_now_register_send_cb(reinterpret_cast<esp_now_send_cb_t>(&NOWMESH_class::send_data));
@@ -89,10 +90,10 @@ void NOWMESH_class::begin(uint8_t channel) {
 void NOWMESH_class::timesync( void * parameter ) {
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
 	for (;;){
-      uint64_t millisepoch;
+      uint64_t millisepoch=0;
       struct timeval tv;
       gettimeofday(&tv, NULL);
-      while(tv.tv_sec<1500000000){
+      while(WiFi.status()!=WL_CONNECTED || tv.tv_sec<1500000000){
         delay(5000);
         gettimeofday(&tv, NULL);
       }
@@ -117,7 +118,7 @@ void NOWMESH_class::timesync( void * parameter ) {
     new_packet.DATA = data;
   
     NOWMESH_class::packet_send(new_packet);
-    delay(60000);
+    delay(60000+(esp_random()%60000));
 	}
 }
 
@@ -184,8 +185,18 @@ String NOWMESH_class::ID() {
 }
 
 void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
-  if (packet.TTL==0 || packet.DESTINATION == NOWMESH_class::ID()) return;
-  Serial.printf("RPT: %04X\n", packet.UID);
+  if (packet.TTL==0 || packet.DESTINATION == NOWMESH_class::ID()) {
+      
+    uint8_t* newData = packet.DATA;
+    packet.DATA=0;
+    packet.TIMESTAMP = millis();
+    history.add(packet); //Without DATA
+    packet.DATA=newData;
+    return;
+  }
+#if defined(NOWMESH_DEBUG)
+    Serial.printf("RPT: %04X\n", packet.UID);
+#endif
   packet.TTL--;
     
   NOWMESH_class::packet_send(packet);
@@ -198,7 +209,9 @@ void NOWMESH_class::packet_ack(NowMeshPacket &packet){
   if (packet.ACK==0 || packet.ANS==1) return;
 
   if (packet.ACK==1 && packet.ANS==0){
+#if defined(NOWMESH_DEBUG)
     Serial.printf("ACK: %04X\n", packet.UID);
+#endif
     
     NowMeshPacket response;
     response.SIZE = 2;
@@ -222,25 +235,42 @@ void NOWMESH_class::packet_ack(NowMeshPacket &packet){
   
 }
 void NOWMESH_class::packet_mng(NowMeshPacket &packet){
-   //TODO
+  if (packet.SIZE<=1) return;
+  if (packet.DATA[0]=='s' && packet.SIZE==9){
+    uint64_t millisepoch=0;
+    struct timeval tv;
+
+    for (int i=0; i<8; i++){
+      millisepoch |= (uint64_t)(packet.DATA[i+1])<<(i*8);
+    }
+    
+    tv.tv_sec = millisepoch/1000;
+    tv.tv_usec = (millisepoch%1000)*1000;
+    settimeofday(&tv, NULL);
+  }
 }
 
 void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_t len){
   NowMeshPacket new_packet;
   new_packet.fromRAW(data, len);
   
+#if defined(NOWMESH_DEBUG)
   Serial.println();
   Serial.printf("NEW: %04X\n", new_packet.UID);
+#endif
 
   uint16_t i;
   for (i=0; i<history.size(); i++){
       
     while (i<history.size() && millis() - history.get(i).TIMESTAMP > 20000) {
+#if defined(NOWMESH_DEBUG)
   Serial.printf("REM: %04X\n", history.get(i).UID);
+#endif
       history.remove(i);
     }
+#if defined(NOWMESH_DEBUG)
       Serial.printf("CMP: %04X | %04X\n", new_packet.UID, history.get(i).UID);
-
+#endif
     if ( i<history.size() && 
       history.get(i).UID == new_packet.UID &&
       history.get(i).SOURCE == new_packet.SOURCE &&
@@ -248,38 +278,38 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
       history.get(i).ACK == new_packet.ACK &&
       history.get(i).ANS == new_packet.ANS &&
       history.get(i).MNG == new_packet.MNG){
+#if defined(NOWMESH_DEBUG)
           Serial.printf("DUP: %04X\n", history.get(i).UID);
-          return; //duplicate packet, ignore silently
+#endif
+      return; //duplicate packet, ignore silently
       }
       
   }
-  
-  uint8_t* newData = new_packet.DATA;
-  new_packet.DATA=0;
-  new_packet.TIMESTAMP = millis();
-  history.add(new_packet); //Without DATA
-  new_packet.DATA=newData;
 
   packet_repeat(new_packet);
 
   if (new_packet.MNG) {
     packet_mng(new_packet);
   } else if (new_packet.ANS==1 && new_packet.SIZE==2){
-      if (on_ack){
-        uint16_t new_UID = (uint16_t) new_packet.DATA[0]<<8 | new_packet.DATA[1];
-        for (i=0; i<history.size(); i++){
-          if (history.get(i).UID == new_UID) on_ack(new_packet.SOURCE, new_UID);
-        }
+    if (on_ack){
+      uint16_t new_UID = (uint16_t) new_packet.DATA[0]<<8 | new_packet.DATA[1];
+      for (i=0; i<history.size(); i++){
+        if (history.get(i).UID == new_UID) on_ack(new_packet.SOURCE, new_UID);
+      }
     }
   } else {
     for (i=0; i<subscribed.size(); i++)
       if (subscribed.get(i).equals(new_packet.DESTINATION)){
 		packet_ack(new_packet);
-//        if (on_received) on_received(new_packet);
+#if !defined(NOWMESH_DEBUG)
+        if (on_received) on_received(new_packet);
+#endif
         break;
       }
   }
+#if defined(NOWMESH_DEBUG)
   on_received(new_packet); //DEBUG MODE
+#endif
 }
 
 void NOWMESH_class::send_data(const uint8_t *mac, uint8_t status){

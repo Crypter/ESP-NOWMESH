@@ -3,6 +3,7 @@
 #include "esp-nowmesh.h"
 
 void message_received(NowMeshPacket &packet){
+#if defined (NOWMESH_DEBUG)
   Serial.println("NEW MSG ===");
   Serial.print("SRC: "); Serial.println(packet.SOURCE);
   Serial.print("DST: "); Serial.println(packet.DESTINATION);
@@ -19,14 +20,23 @@ void message_received(NowMeshPacket &packet){
   }
     Serial.printf("%02X", packet.DATA[packet.SIZE-1]);
     Serial.println();
-  Serial.println("= = = = = = = = =");
+    Serial.println("= = = = = = = = =");
+#endif
+Serial.printf("RECV (%04X): ", packet.UID);
+for (uint8_t i=0; i<packet.SIZE-1; i++){
+    Serial.printf("%c", packet.DATA[i]);
+  }
+Serial.println();
 }
 
 void message_acked(String source, uint16_t UID){
+#if defined (NOWMESH_DEBUG)
   Serial.println("NEW ACK ===");
   Serial.print("UID: "); Serial.printf("%04X", UID); Serial.println();
   Serial.print("SRC: "); Serial.println(source);
   Serial.println("= = = = = = = = =");
+#endif
+  Serial.printf("SEEN (%04X): %s\r\n", UID, source.c_str());
 }
 
 uint8_t button_state=1;
@@ -37,9 +47,10 @@ void setup() {
   Serial.print("ID: ");
   Serial.println(NowMesh.ID());
 
-  //if (NowMesh.ID().equals( "B4:E6:2D:B2:C6:0D")) WiFi.begin("Gajtanless", "google.com.mk");
+//  if (NowMesh.ID().equals( "B4:E6:2D:B2:C6:0D")) WiFi.begin("Gajtanless", "google.com.mk");
+//  WiFi.begin("Gajtanless", "google.com.mk");
   
-  NowMesh.begin(6);
+  NowMesh.begin(11);
   NowMesh.setOnReceive(message_received);
   NowMesh.setOnACK(message_acked);
   NowMesh.subscribe("FF:FF:FF:FF:FF:FF");
@@ -47,12 +58,11 @@ void setup() {
 }
 
 void loop() {
-  if(digitalRead(0)!=button_state){
-    if (digitalRead(0)==0){
-      Serial.print("SENT: ");
-      Serial.printf("%04X", NowMesh.send("FF:FF:FF:FF:FF:FF", (uint8_t*)"01234", 5, true));
-      Serial.println();
-    }
-    button_state=digitalRead(0);
-  }
+String input;
+input = Serial.readStringUntil('\n');
+
+if (input.length()){
+  Serial.printf("SENT (%04X): %s", NowMesh.send("FF:FF:FF:FF:FF:FF", (uint8_t*)input.c_str(), input.length()+1, true), input.c_str());
+  Serial.println();
+}
 }

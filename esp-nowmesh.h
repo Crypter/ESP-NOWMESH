@@ -44,6 +44,7 @@ public:
   static uint16_t send(String service, uint8_t data[], uint8_t size, uint8_t ACK = 0);
   static void subscribe(String address);
   static String ID();
+  static uint8_t channel;
   
 private:
   static ReceivedDataFunction on_received;
@@ -57,7 +58,7 @@ private:
   static void packet_mng(NowMeshPacket &packet);
   static void timesync( void * parameter );
   
-  static uint8_t channel;
+//  static uint8_t channel;
 
   static LinkedList<NowMeshPacket> history;
   static LinkedList<String> subscribed;
