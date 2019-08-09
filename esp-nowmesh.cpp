@@ -185,8 +185,7 @@ String NOWMESH_class::ID() {
 }
 
 void NOWMESH_class::packet_repeat(NowMeshPacket &packet){
-  if (packet.TTL==0 || packet.DESTINATION == NOWMESH_class::ID()) {
-      
+  if (packet.TTL==0) {
     uint8_t* newData = packet.DATA;
     packet.DATA=0;
     packet.TIMESTAMP = millis();
@@ -236,7 +235,7 @@ void NOWMESH_class::packet_ack(NowMeshPacket &packet){
 }
 void NOWMESH_class::packet_mng(NowMeshPacket &packet){
   if (packet.SIZE<=1) return;
-  if (packet.DATA[0]=='s' && packet.SIZE==9){
+  if (packet.SIZE==9 && packet.DATA[0]=='s'){ //sync
     uint64_t millisepoch=0;
     struct timeval tv;
 
@@ -248,6 +247,9 @@ void NOWMESH_class::packet_mng(NowMeshPacket &packet){
     tv.tv_usec = (millisepoch%1000)*1000;
     settimeofday(&tv, NULL);
   }
+  else if (packet.SIZE>=2 && packet.DATA[0]=='p'){ //ping
+    //return pong
+  }
 }
 
 void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_t len){
@@ -255,7 +257,6 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   new_packet.fromRAW(data, len);
   
 #if defined(NOWMESH_DEBUG)
-  Serial.println();
   Serial.printf("NEW: %04X\n", new_packet.UID);
 #endif
 
@@ -300,7 +301,7 @@ void NOWMESH_class::receive_data(const uint8_t *mac, const uint8_t *data, uint8_
   } else {
     for (i=0; i<subscribed.size(); i++)
       if (subscribed.get(i).equals(new_packet.DESTINATION)){
-		packet_ack(new_packet);
+		    packet_ack(new_packet);
 #if !defined(NOWMESH_DEBUG)
         if (on_received) on_received(new_packet);
 #endif
